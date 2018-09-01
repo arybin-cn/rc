@@ -1,3 +1,6 @@
+# ScreenFetch
+alias sf='screenfetch'
+
 # FTP
 alias ftp='lftp'
 
