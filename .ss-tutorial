@@ -1,0 +1,8 @@
+git clone https://github.com/flyzy2005/ss-fly
+ss-fly/ss-fly.sh -i flyzy2005.com 1024
+
+config:/etc/shadowsocks.json
+stop:ssserver -c /etc/shadowsocks.json -d stop
+start:ssserver -c /etc/shadowsocks.json -d start
+restart:ssserver -c /etc/shadowsocks.json -d restart
+uninstall:ss-fly/ss-fly.sh -uninstall
