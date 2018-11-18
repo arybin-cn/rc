@@ -1,0 +1,153 @@
+{
+    "workbench.settings.openDefaultSettings": false,
+    "editor.fontSize": 20,
+    "vim.easymotion": true,
+    "vim.leader": "<Space>",
+    "vim.insertModeKeyBindings": [
+        {
+            "before": [
+                "j",
+                "k"
+            ],
+            "after": [
+                "<Esc>"
+            ]
+        },
+        {
+            "before": [
+                "J",
+                "K"
+            ],
+            "commands": [
+                "extension.vim_escape",
+                "workbench.action.files.save"
+            ]
+        },
+        {
+            "before": [
+                "j",
+                "l"
+            ],
+            "after": [
+                "<ESC>",
+                "A"
+            ]
+        },
+        {
+            "before": [
+                "f",
+                "f"
+            ],
+            "commands": [
+                "editor.action.formatDocument",
+                "extension.vim_escape"
+            ]
+        },
+        {
+            "before": [
+                "F",
+                "F"
+            ],
+            "commands": [
+                "editor.action.formatDocument",
+                "extension.vim_escape",
+                "workbench.action.files.save"
+            ]
+        },
+        {
+            "before": [
+                "j",
+                "d"
+            ],
+            "after": [
+                "("
+            ]
+        },
+        {
+            "before": [
+                "j",
+                "g"
+            ],
+            "after": [
+                "["
+            ]
+        },
+        {
+            "before": [
+                "j",
+                "f"
+            ],
+            "after": [
+                "{"
+            ]
+        },
+        {
+            "before": [
+                "j",
+                "v"
+            ],
+            "after": [
+                "\""
+            ]
+        },
+        {
+            "before": [
+                "j",
+                "b"
+            ],
+            "after": [
+                "'"
+            ]
+        },
+    ],
+    "vim.normalModeKeyBindings": [
+        {
+            "before": [
+                "J"
+            ],
+            "commands": [
+                "workbench.action.previousEditor"
+            ]
+        },
+        {
+            "before": [
+                "K"
+            ],
+            "commands": [
+                "workbench.action.nextEditor"
+            ]
+        },
+        {
+            "before": [
+                "<Leader>",
+                "<Leader>"
+            ],
+            "after": [
+                ":"
+            ]
+        },
+        {
+            "before": [
+                "<Leader>",
+                "p"
+            ],
+            "commands": [
+                "workbench.action.quickOpen"
+            ]
+        },
+        {
+            "before": [
+                "<Leader>",
+                "o"
+            ],
+            "commands": [
+                "workbench.action.showCommands"
+            ]
+        }
+    ],
+    "vim.handleKeys": {
+        "<C-w>": false,
+        "<C-a>": false,
+        "<C-c>": false
+    }
+}
