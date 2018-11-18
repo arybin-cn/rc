@@ -1,7 +1,8 @@
 {
+    "workbench.colorTheme": "Monokai Dimmed",
+    "workbench.settings.openDefaultKeybindings": false,
     "workbench.settings.openDefaultSettings": false,
     "editor.fontSize": 20,
-    "vim.easymotion": true,
     "vim.leader": "<Space>",
     "vim.insertModeKeyBindings": [
         {
@@ -141,6 +142,15 @@
         {
             "before": [
                 "<Leader>",
+                "s"
+            ],
+            "commands": [
+                "workbench.action.debug.run"
+            ]
+        },
+        {
+            "before": [
+                "<Leader>",
                 "p"
             ],
             "commands": [
@@ -161,7 +171,5 @@
         "<C-w>": false,
         "<C-a>": false,
         "<C-c>": false
-    },
-    "workbench.colorTheme": "Monokai Dimmed",
-    "workbench.settings.openDefaultKeybindings": false
+    }
 }
