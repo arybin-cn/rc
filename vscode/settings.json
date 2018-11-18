@@ -10,7 +10,7 @@
                 "k"
             ],
             "after": [
-                "<Esc>"
+                "<ESC>"
             ]
         },
         {
@@ -31,6 +31,18 @@
             "after": [
                 "<ESC>",
                 "A"
+            ]
+        },
+        {
+            "before": [
+                "j",
+                ";"
+            ],
+            "after": [
+                "j",
+                "l",
+                ";",
+                "<ESC>"
             ]
         },
         {
@@ -149,5 +161,7 @@
         "<C-w>": false,
         "<C-a>": false,
         "<C-c>": false
-    }
+    },
+    "workbench.colorTheme": "Monokai Dimmed",
+    "workbench.settings.openDefaultKeybindings": false
 }
