@@ -1,7 +1,17 @@
-nnoremap <Space><Space> :
+nmap <Space><Space> :
+nmap <Space>j :action PreviousTab<CR>
+nmap <Space>k :action NextTab<CR>
+nmap <Space>q :action CloseEditor<CR>
+nmap <Space>w :action CloseAllEditorsButActive<CR>
+nmap <Space>p :action SearchEverywhere<CR>
+nmap <Space>o :action GotoSymbol<CR>
+nmap <Space>e :action RunClass<CR>
 
-inoremap jk <ESC>
-inoremap jl <ESC>A
+nmap K :action GotoDeclaration<CR>
+
+imap FF <ESC>:action ReformatCode<CR>
+imap jk <ESC>
+imap jl <ESC>A
 
 imap j; <ESC>A;<ESC>
 
