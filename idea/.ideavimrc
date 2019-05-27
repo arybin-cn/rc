@@ -1,0 +1,13 @@
+nnoremap <Space><Space> :
+
+inoremap jk <ESC>
+inoremap jl <ESC>A
+
+imap j; <ESC>A;<ESC>
+
+imap jv ""<Left>
+imap jb ''<Left>
+imap jt <><Left>
+imap jg []<Left>
+imap jf {}<Left>
+imap jd ()<Left>
