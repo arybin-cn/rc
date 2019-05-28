@@ -1,27 +1,34 @@
-alias cdp='cd ~/Projects'
-alias cdpp='cd /projects'
-alias cdd='cd ~/Desktop'
-
-# ScreenFetch
-alias sf='screenfetch'
-
 # FTP
 alias ftp='lftp'
 
-# SSHD
-function sshd(){
-  if [ "$(sudo service ssh status | grep not)" ]; then
-    sshd_action="start"
-  else
-    sshd_action="stop"
-  fi
-  sudo service ssh $sshd_action
-  unset sshd_action
-}
+# Github
+alias git='hub'
 
-# Temp files
-FILES_TMP="$HOME/.*history $HOME/.viminfo $HOME/.swp $HOME/.xsession-errors*"
-alias q='rm -rf $FILES_TMP 2>/dev/null;history -c && exit'
+# Backup/Restore files to/from remote server
+function BackupFiles(){
+  rsync $@ xmu:~/BACKUP/ -Pv
+}
+function RestoreFiles(){
+  rsync xmu:~/BACKUP/$@ . -Pv
+}
+alias bk=BackupFiles
+alias rs=RestoreFiles
+
+alias cdd='cd ~/Desktop'
+alias cdp='cd ~/Projects'
+
+# MRU files
+ARB_MRU_FILES="$HOME/.*history $HOME/.viminfo $HOME/.swp $HOME/.xsession-errors*"
+function ClearMruFiles(){
+  for vmsdFile in $HOME/VMware/**/*.vmsd
+  do
+    sed -i "/^snapshot.lastUID/d" $vmsdFile
+    sed -i "/^snapshot.mru/d" $vmsdFile
+  done
+  rm -rf $ARB_MRU_FILES 2>/dev/null
+  history -c && exit
+}
+alias q=ClearMruFiles
 
 # Proxy
 PROXY_VARS="http_proxy https_proxy HTTP_PROXY HTTPS_PROXY"
