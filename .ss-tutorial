@@ -1,5 +1,5 @@
-git clone https://github.com/flyzy2005/ss-fly
-ss-fly/ss-fly.sh -i flyzy2005.com 1024
+git clone https://github.com/arybin-cn/ss-fly
+ss-fly/ss-fly.sh -i passwd port
 
 config:/etc/shadowsocks.json
 stop:ssserver -c /etc/shadowsocks.json -d stop
