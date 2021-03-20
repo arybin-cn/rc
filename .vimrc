@@ -4,6 +4,8 @@ colorscheme koehler
 let mapleader = "\<Space>"
 
 set nu
+set noeb
+set mouse=
 set hidden
 set expandtab
 set tabstop=2
