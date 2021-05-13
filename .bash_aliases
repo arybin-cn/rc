@@ -27,5 +27,10 @@ function toggleProxy(){
 }
 alias tp=toggleProxy
 
+# common usage
+alias ll='ls -alF'
+alias la='ls -A'
+alias l='ls -CF'
+
 # tmux print (history)
 alias tmuxp="tmux capture-pane -pS -"
