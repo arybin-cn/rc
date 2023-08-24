@@ -48,7 +48,7 @@ Plugin 'kien/ctrlp.vim'
 nnoremap <Leader>p :CtrlP<CR>
 
 Plugin 'scrooloose/nerdtree'
-nnoremap <Leader>o :NERDTreeToggle<CR>
+nnoremap <Leader>o :NERDTreeFocus<CR>
 
 Plugin 'easymotion/vim-easymotion'
 map <Leader> <Plug>(easymotion-prefix)
