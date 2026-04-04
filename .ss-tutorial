@@ -1,8 +1,0 @@
-git clone https://github.com/arybin-cn/ss-fly
-ss-fly/ss-fly.sh -i passwd port
-
-config:/etc/shadowsocks.json
-stop:ssserver -c /etc/shadowsocks.json -d stop
-start:ssserver -c /etc/shadowsocks.json -d start
-restart:ssserver -c /etc/shadowsocks.json -d restart
-uninstall:ss-fly/ss-fly.sh -uninstall
