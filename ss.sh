@@ -9,7 +9,7 @@ read -p "Enter port [default: 8388]: " PORT
 PORT=${PORT:-8388}
 
 # Ask for password (must specify)
-read -s -p "Enter password: " PASSWORD
+read -p "Enter password: " PASSWORD
 echo
 if [ -z "$PASSWORD" ]; then
   echo "No password entered. Exiting."
