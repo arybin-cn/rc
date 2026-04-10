@@ -84,7 +84,6 @@ EOF
 
     IMPORT_URL="vless://$USER_UUID@$SERVER_IP:$LISTEN_PORT?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$SNI_NAME&fp=chrome&pbk=$PUBLIC_KEY&sid=$SHORT_ID&type=tcp&headerType=none#VLESS_$SERVER_IP"
 
-    # Define Info Output for REALITY
     SHOW_INFO="Protocol: VLESS-REALITY\nAddress: $SERVER_IP\nPort: $LISTEN_PORT\nUUID: $USER_UUID\nFlow: xtls-rprx-vision\nSNI: $SNI_NAME\nPublic Key: $PUBLIC_KEY\nShort ID: $SHORT_ID"
 
 elif [ "$PROTO_CHOICE" == "2" ]; then
@@ -102,7 +101,7 @@ elif [ "$PROTO_CHOICE" == "2" ]; then
     CRYPTO_METHOD="chacha20-ietf-poly1305"
     $CONTAINER_ENGINE run -d --name ${CONTAINER_NAME} --restart always \
       -p ${SERVICE_PORT}:8388 -p ${SERVICE_PORT}:8388/udp \
-      shadowsocks/shadowsocks-libev \
+      docker.io/shadowsocks/shadowsocks-libev \
       ss-server -s 0.0.0.0 -p 8388 -m $CRYPTO_METHOD -k ${SERVICE_PASSWORD}
 
     if [ $? -ne 0 ]; then echo "Error: Shadowsocks container failed to start!"; exit 1; fi
@@ -110,7 +109,6 @@ elif [ "$PROTO_CHOICE" == "2" ]; then
     AUTH_BASE64=$(echo -n "$CRYPTO_METHOD:$SERVICE_PASSWORD" | base64 | tr -d '\n')
     IMPORT_URL="ss://$AUTH_BASE64@$SERVER_IP:$SERVICE_PORT#SS_$SERVER_IP"
 
-    # Define Info Output for Shadowsocks
     SHOW_INFO="Protocol: Shadowsocks\nAddress: $SERVER_IP\nPort: $SERVICE_PORT\nPassword: $SERVICE_PASSWORD\nMethod: $CRYPTO_METHOD"
 fi
 
@@ -127,5 +125,6 @@ echo ""
 echo "--------------------------------------------------"
 echo "Generating QR Code..."
 echo "--------------------------------------------------"
-$CONTAINER_ENGINE run --rm -it -e PIP_ROOT_USER_ACTION=ignore python:slim sh -c "pip install -q qrcode && qr '$IMPORT_URL'"
+# Using fully qualified image name as requested
+$CONTAINER_ENGINE run --rm -it -e PIP_ROOT_USER_ACTION=ignore docker.io/library/python:slim sh -c "pip install -q qrcode && qr '$IMPORT_URL'"
 echo "--------------------------------------------------"
