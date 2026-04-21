@@ -59,7 +59,8 @@ if [ "$PROTO_CHOICE" = "1" ]; then
         USER_UUID=$(od -x -N 16 /dev/urandom | head -n 1 | awk '{printf "%s%s-%s-%s-%s-%s%s%s", $2,$3,$4,$5,$6,$7,$8,$9}')
     fi
 
-    KEY_DATA=$($CONTAINER_RUNTIME run --rm ghcr.io/sagernet/sing-box:latest generate reality-keypair)
+    # Fixed version to sing-box v1.11.4
+    KEY_DATA=$($CONTAINER_RUNTIME run --rm ghcr.io/sagernet/sing-box:v1.11.4 generate reality-keypair)
     if [ $? -ne 0 ]; then echo "Error: Key generation failed!"; exit 1; fi
 
     PRIVATE_KEY=$(echo "$KEY_DATA" | grep "PrivateKey" | awk '{print $2}')
@@ -102,10 +103,11 @@ EOF
 
     $CONTAINER_RUNTIME rm -f "${CONTAINER_NAME}" 2>/dev/null
 
+    # Fixed version to sing-box v1.11.4
     $CONTAINER_RUNTIME run -d --name "${CONTAINER_NAME}" --restart always \
       -v "$CONFIG_DIR/config.json:/etc/sing-box/config.json" \
       -p "${LISTEN_PORT}:8388" -p "${LISTEN_PORT}:8388/udp" \
-      ghcr.io/sagernet/sing-box:latest -c /etc/sing-box/config.json run
+      ghcr.io/sagernet/sing-box:v1.11.4 -c /etc/sing-box/config.json run
 
     if [ $? -ne 0 ]; then echo "Error: REALITY container failed to start!"; exit 1; fi
 
@@ -128,9 +130,10 @@ elif [ "$PROTO_CHOICE" = "2" ]; then
     $CONTAINER_RUNTIME rm -f "${CONTAINER_NAME}" 2>/dev/null
 
     CRYPTO_METHOD="chacha20-ietf-poly1305"
+    # Fixed version to shadowsocks-libev v3.3.5
     $CONTAINER_RUNTIME run -d --name "${CONTAINER_NAME}" --restart always \
       -p "${SERVICE_PORT}:8388" -p "${SERVICE_PORT}:8388/udp" \
-      docker.io/shadowsocks/shadowsocks-libev \
+      docker.io/shadowsocks/shadowsocks-libev:v3.3.5 \
       ss-server -s 0.0.0.0 -p 8388 -m $CRYPTO_METHOD -k "${SERVICE_PASSWORD}"
 
     if [ $? -ne 0 ]; then echo "Error: Shadowsocks container failed to start!"; exit 1; fi
@@ -157,5 +160,7 @@ echo ""
 echo "--------------------------------------------------"
 echo "Generating QR Code..."
 echo "--------------------------------------------------"
-$CONTAINER_RUNTIME run --rm -it -e PIP_ROOT_USER_ACTION=ignore docker.io/library/python:slim sh -c "pip install -q qrcode && qr '$IMPORT_URL'"
+# Fixed version to python:3.12-slim and disabled pip version check notice
+$CONTAINER_RUNTIME run --rm -it -e PIP_ROOT_USER_ACTION=ignore docker.io/library/python:3.12-slim sh -c \
+    "pip install -q --disable-pip-version-check qrcode && qr '$IMPORT_URL'"
 echo "--------------------------------------------------"
