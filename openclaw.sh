@@ -21,33 +21,40 @@ fi
 
 echo "Using runtime: $CONTAINER_RUNTIME"
 
-# --- Directory Configuration & Check ---
+# --- Directory Configuration ---
 DEFAULT_APP_DIR="$HOME/.openclaw"
 printf "Enter deployment directory [default: $DEFAULT_APP_DIR]: "
 read -r APP_DIR
 APP_DIR=${APP_DIR:-$DEFAULT_APP_DIR}
 
-if [ -d "$APP_DIR" ]; then
-    echo "Error: Directory '$APP_DIR' already exists. Exiting to prevent overwrite."
-    exit 1
-fi
+# --- Environment Setup ---
+mkdir -p "$APP_DIR"
 
 # --- Configuration Input ---
 echo "--------------------------------------------------"
 echo "OpenClaw Deployment Configuration"
 echo "--------------------------------------------------"
 
-# Generate a random 64-char hex token (32 bytes) for Gateway
+# Generate gateway security token
 if command -v openssl >/dev/null 2>&1; then
     OPENCLAW_GATEWAY_TOKEN=$(openssl rand -hex 32)
 else
     OPENCLAW_GATEWAY_TOKEN=$(LC_ALL=C tr -dc 'a-f0-9' < /dev/urandom | fold -w 64 | head -n 1)
 fi
 
-# TG Token input
-printf "Enter Telegram Bot Token (Optional, press Enter to skip): "
+# Telegram Setup
+printf "Enter Telegram Bot Token (Optional, Enter to skip): "
 read -r TG_TOKEN
+TG_ALLOWLIST=""
+DM_POLICY="pairing"
+if [ -n "$TG_TOKEN" ]; then
+    # Updated: Explicitly mentioning Numeric IDs only
+    printf "Enter Telegram Allowlist (Numeric IDs ONLY, e.g., tg:123456,tg:789012): "
+    read -r TG_ALLOWLIST
+    [ -n "$TG_ALLOWLIST" ] && DM_POLICY="allowlist"
+fi
 
+# LLM Provider Selection
 echo "Select your LLM Provider:"
 echo "1) OpenAI          5) OpenRouter       9) Synthetic"
 echo "2) Anthropic       6) Google Gemini   10) Minimax"
@@ -69,7 +76,7 @@ case $LLM_CHOICE in
     8)  LLM_ENV_VAR="DASHSCOPE_API_KEY" ;;
     9)  LLM_ENV_VAR="SYNTHETIC_API_KEY" ;;
     10) LLM_ENV_VAR="MINIMAX_API_KEY" ;;
-    11) printf "Enter custom environment variable name: "; read -r LLM_ENV_VAR ;;
+    11) printf "Enter custom env var name: "; read -r LLM_ENV_VAR ;;
     *)  LLM_ENV_VAR="" ;;
 esac
 
@@ -80,8 +87,8 @@ if [ -n "$LLM_ENV_VAR" ]; then
     if echo "$LLM_API_KEY" | grep -q ","; then
         case $LLM_ENV_VAR in
             OPENAI_API_KEY|ANTHROPIC_API_KEY|GOOGLE_API_KEY)
-                LLM_ENV_VAR="${LLM_ENV_VAR}S" 
-                echo "Notice: Detected multiple keys. Variable set to $LLM_ENV_VAR" ;;
+                LLM_ENV_VAR="${LLM_ENV_VAR}S"
+                echo "Notice: Multiple keys detected. Variable set to $LLM_ENV_VAR" ;;
         esac
     fi
 fi
@@ -94,32 +101,61 @@ printf "Enter Container Name [default: openclaw]: "
 read -r CONTAINER_NAME
 CONTAINER_NAME=${CONTAINER_NAME:-openclaw}
 
-# --- Environment Setup ---
-mkdir -p "$APP_DIR/config" "$APP_DIR/workspace"
+# --- Generate JSON5 Config File ---
+# Secure allowed origins: Local access only
+ALLOWED_ORIGINS="\"http://localhost\", \"http://localhost:${LISTEN_PORT}\", \"http://127.0.0.1:${LISTEN_PORT}\""
+
+FORMATTED_ALLOWLIST=""
+if [ -n "$TG_ALLOWLIST" ]; then
+    FORMATTED_ALLOWLIST=$(echo "$TG_ALLOWLIST" | sed "s/,/\",\"/g" | sed 's/^/\"/' | sed 's/$/\"/')
+fi
+
+cat <<EOF > "$APP_DIR/openclaw.json"
+{
+  // System Gateway Settings
+  gateway: {
+    controlUi: {
+      allowedOrigins: [${ALLOWED_ORIGINS}]
+    }
+  },
+  // Communication Channels
+  channels: {
+    telegram: {
+      enabled: $([ -n "$TG_TOKEN" ] && echo "true" || echo "false"),
+      botToken: "${TG_TOKEN}",
+      dmPolicy: "${DM_POLICY}", 
+      allowFrom: [${FORMATTED_ALLOWLIST}]
+    }
+  }
+}
+EOF
+
+# --- Build Runtime-Specific Flags ---
+EXTRA_FLAGS=""
+if [ "$CONTAINER_RUNTIME" = "podman" ]; then
+    # Podman: keep-id maps host user to container user (node)
+    EXTRA_FLAGS="--userns keep-id"
+else
+    # Docker: map host UID/GID directly
+    EXTRA_FLAGS="--user $(id -u):$(id -g)"
+fi
 
 # --- Build Run Command ---
 echo "Preparing deployment (ghcr.io/openclaw/openclaw:2026.4.15)..."
 
 $CONTAINER_RUNTIME rm -f "${CONTAINER_NAME}" 2>/dev/null
 
-# Initial run command with core variables
 RUN_CMD="$CONTAINER_RUNTIME run -d \
     --name ${CONTAINER_NAME} \
     --restart always \
+    $EXTRA_FLAGS \
     -p ${LISTEN_PORT}:18789 \
-    -v $APP_DIR/config:/app/config \
-    -v $APP_DIR/workspace:/workspace \
+    -v $APP_DIR:/home/node/.openclaw:Z \
     -e OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN} \
     -e NODE_ENV=production"
 
-# Add LLM Key if provided
 if [ -n "$LLM_ENV_VAR" ] && [ -n "$LLM_API_KEY" ]; then
     RUN_CMD="$RUN_CMD -e $LLM_ENV_VAR=$LLM_API_KEY"
-fi
-
-# Add Telegram Token via Env Var as per screenshot
-if [ -n "$TG_TOKEN" ]; then
-    RUN_CMD="$RUN_CMD -e TELEGRAM_BOT_TOKEN=$TG_TOKEN"
 fi
 
 RUN_CMD="$RUN_CMD ghcr.io/openclaw/openclaw:2026.4.15"
@@ -127,31 +163,20 @@ RUN_CMD="$RUN_CMD ghcr.io/openclaw/openclaw:2026.4.15"
 # --- Execute ---
 eval "$RUN_CMD"
 
-if [ $? -ne 0 ]; then echo "Error: Container failed to start!"; exit 1; fi
-
-# --- Final Output ---
-SERVER_IP=$(curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
-
-echo "--------------------------------------------------"
-echo "Deployment Complete!"
-echo "--------------------------------------------------"
-echo "Web UI Access: http://$SERVER_IP:$LISTEN_PORT"
-echo "Gateway Token: $OPENCLAW_GATEWAY_TOKEN"
-echo "Config Directory: $APP_DIR"
-
-if [ -n "$TG_TOKEN" ]; then
+if [ $? -eq 0 ]; then
     echo "--------------------------------------------------"
-    echo "Telegram Bot is enabled via Environment Variable."
-    echo "Next Steps:"
-    echo "1. Send a message to your bot on Telegram."
-    echo "2. Run the following command to approve (Replace CODE):"
-    echo ""
-    echo "$CONTAINER_RUNTIME exec -it ${CONTAINER_NAME} node dist/index.js pairing approve telegram CODE"
+    echo "Deployment Complete!"
+    echo "--------------------------------------------------"
+    SERVER_IP=$(curl -s https://api.ipify.org || echo "YOUR_SERVER_IP")
+    echo "Web UI Access: http://${SERVER_IP}:${LISTEN_PORT}"
+    echo "Gateway Token: ${OPENCLAW_GATEWAY_TOKEN}"
+    echo "Config Directory: $APP_DIR"
+    echo "Policy Applied: $DM_POLICY"
+    if [ "$DM_POLICY" = "allowlist" ]; then
+        echo "Whitelist IDs: $TG_ALLOWLIST"
+    fi
+    echo "--------------------------------------------------"
+else
+    echo "Error: Container failed to start!"
+    exit 1
 fi
-echo "--------------------------------------------------"
-
-# QR Code generation
-echo "Generating QR Code for Web UI..."
-$CONTAINER_RUNTIME run --rm -it -e PIP_ROOT_USER_ACTION=ignore docker.io/library/python:3.12-slim sh -c \
-    "pip install -q --disable-pip-version-check qrcode && qr 'http://$SERVER_IP:$LISTEN_PORT'"
-echo "--------------------------------------------------"
