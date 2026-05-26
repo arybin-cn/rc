@@ -1,8 +1,8 @@
 #!/bin/sh
-
 # ==============================================================================
 # Description: Persistent Node-based deployment for Claude Code.
 # Features: Runtime detection, Persistent config, and Skip-permissions alias.
+# Optimizations: Added SYS_PTRACE capability and 4GB SHM size for development.
 # ==============================================================================
 
 # --- 0. Version Configuration ---
@@ -32,6 +32,11 @@ IMG_ID=$($RUNTIME images -q "$LOCAL_TAG" 2>/dev/null)
 if [ -z "$IMG_ID" ]; then
     echo "[>] Building Claude Code Image (Node Bookworm-Slim @$CC_VERSION)"
     TMP_DF=$(mktemp)
+    if [ $? -ne 0 ]; then
+        echo "[!] Error: Failed to create temporary file."
+        exit 1
+    fi
+
     cat <<EOF > "$TMP_DF"
 FROM node:20-bookworm-slim
 RUN apt-get update && apt-get install -y procps && \\
@@ -44,14 +49,21 @@ RUN echo '{"hasCompletedOnboarding": true}' > /root/.claude.json && \\
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash"]
 EOF
-    $RUNTIME build -t "$LOCAL_TAG" -f "$TMP_DF" .
-    IMG_ID=$($RUNTIME images -q "$LOCAL_TAG" 2>/dev/null)
-    rm "$TMP_DF"
 
-    if [ -z "$IMG_ID" ]; then
-        echo "[!] Error: Image build failed."
+    $RUNTIME build -t "$LOCAL_TAG" -f "$TMP_DF" .
+    if [ $? -ne 0 ]; then
+        echo "[!] Error: Container image build failed."
+        rm "$TMP_DF" 2>/dev/null
         exit 1
     fi
+
+    IMG_ID=$($RUNTIME images -q "$LOCAL_TAG" 2>/dev/null)
+    rm "$TMP_DF" 2>/dev/null
+fi
+
+if [ -z "$IMG_ID" ]; then
+    echo "[!] Error: Image ID could not be resolved."
+    exit 1
 fi
 
 # --- 3. Workspace & Config Configuration ---
@@ -70,11 +82,15 @@ CONFIG_DIR="$WORKSPACE_FOLDER/.claude"
 SETTINGS_FILE="$CONFIG_DIR/settings.json"
 
 mkdir -p "$CONFIG_DIR" 2>/dev/null
+if [ $? -ne 0 ]; then
+    echo "[!] Error: Failed to create configuration directory at $CONFIG_DIR. Check permissions."
+    exit 1
+fi
 
 if [ -f "./CLAUDE.md" ]; then
     if [ ! -f "$CONFIG_DIR/CLAUDE.md" ]; then
         echo "[>] Copying CLAUDE.md to config directory"
-        cp "./CLAUDE.md" "$CONFIG_DIR/CLAUDE.md"
+        cp "./CLAUDE.md" "$CONFIG_DIR/CLAUDE.md" 2>/dev/null
     else
         echo "[>] CLAUDE.md already exists. Skipping."
     fi
@@ -84,9 +100,9 @@ if [ -f "$SETTINGS_FILE" ]; then
     echo "[>] Existing configuration found at $SETTINGS_FILE"
 else
     echo "[!] Initial Setup: API Configuration Required"
-    while [ -z "$INPUT_BASE_URL" ]; do printf "ANTHROPIC_BASE_URL: "; read -r INPUT_BASE_URL; done
-    while [ -z "$INPUT_TOKEN" ]; do printf "ANTHROPIC_AUTH_TOKEN: "; read -r INPUT_TOKEN; done
-    while [ -z "$INPUT_MODEL" ]; do printf "ANTHROPIC_MODEL: "; read -r INPUT_MODEL; done
+    while [ -z "$INPUT_BASE_URL" ]; do printf "ANCHROPIC_BASE_URL: "; read -r INPUT_BASE_URL; done
+    while [ -z "$INPUT_TOKEN" ]; do printf "ANCHROPIC_AUTH_TOKEN: "; read -r INPUT_TOKEN; done
+    while [ -z "$INPUT_MODEL" ]; do printf "ANCHROPIC_MODEL: "; read -r INPUT_MODEL; done
 
     cat <<EOF > "$SETTINGS_FILE"
 {
@@ -145,14 +161,13 @@ $END_SIG"
     for RC_FILE in "$HOME/.bashrc" "$HOME/.zshrc"; do
         if [ -f "$RC_FILE" ]; then
             [ -n "$(tail -c1 "$RC_FILE" 2>/dev/null)" ] && printf "\n" >> "$RC_FILE"
-
+            
             if grep -q "function $FUNC_NAME()" "$RC_FILE"; then
                 if grep -q "$START_SIG" "$RC_FILE"; then
                     TMP_RC=$(mktemp)
                     sed "/$START_SIG/,/$END_SIG/d" "$RC_FILE" > "$TMP_RC"
                     cat "$TMP_RC" > "$RC_FILE"
-                    rm "$TMP_RC"
-
+                    rm "$TMP_RC" 2>/dev/null
                     echo "$FUNC_BODY" >> "$RC_FILE"
                     echo "[>] Updated '$FUNC_NAME' in $RC_FILE"
                 else
@@ -171,14 +186,16 @@ echo "[>] Launching Claude Code Container"
 $RUNTIME rm -f "$CONTAINER_NAME" 2>/dev/null
 
 $RUNTIME run -it \
-    --name "$CONTAINER_NAME" \
-    --hostname "$CONTAINER_HOSTNAME" \
-    --user root \
-    --pull never \
-    -e IS_SANDBOX=1 \
-    -v "$WORKSPACE_FOLDER:/workspace" \
-    -v "$CONFIG_DIR:/root/.claude" \
-    "$IMG_ID"
+  --name "$CONTAINER_NAME" \
+  --hostname "$CONTAINER_HOSTNAME" \
+  --user root \
+  --pull never \
+  --cap-add=SYS_PTRACE \
+  --shm-size=4g \
+  -e IS_SANDBOX=1 \
+  -v "$WORKSPACE_FOLDER:/workspace" \
+  -v "$CONFIG_DIR:/root/.claude" \
+  "$IMG_ID"
 
 if [ $? -eq 0 ]; then
     echo "[>] Session Finished"
