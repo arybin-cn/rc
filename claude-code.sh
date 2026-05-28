@@ -6,7 +6,7 @@
 # ==============================================================================
 
 # --- 0. Version Configuration ---
-CC_VERSION="2.1.133"
+CC_VERSION="2.1.150"
 
 # --- 1. Runtime Auto-Detection (Prioritizing Podman) ---
 if command -v podman >/dev/null 2>&1; then
@@ -113,13 +113,15 @@ else
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "$INPUT_MODEL",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "$INPUT_MODEL",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "$INPUT_MODEL",
-    "DISABLE_AUTOUPDATER": "1"
+    "DISABLE_AUTOUPDATER": "1",
+    "CLAUDE_CODE_ATTRIBUTION_HEADER": "0"
   },
   "effortLevel": "low",
   "theme": "dark",
   "autoCompactEnabled": true,
   "showTurnDuration": true,
   "showMessageTimestamps": true,
+  "skipWebFetchPreflight": true,
   "permissions": {
     "allow": ["Bash(*)", "Edit(*)", "Write(*)", "NotebookEdit(*)"]
   }
@@ -193,8 +195,8 @@ $RUNTIME run -it \
   --cap-add=SYS_PTRACE \
   --shm-size=4g \
   -e IS_SANDBOX=1 \
-  -v "$WORKSPACE_FOLDER:/workspace" \
-  -v "$CONFIG_DIR:/root/.claude" \
+  -v "$WORKSPACE_FOLDER:/workspace:Z" \
+  -v "$CONFIG_DIR:/root/.claude:Z" \
   "$IMG_ID"
 
 if [ $? -eq 0 ]; then
