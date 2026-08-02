@@ -6,7 +6,7 @@
 # ==============================================================================
 
 # --- 0. Version Configuration ---
-OC_VERSION="1.17.15"
+OC_VERSION="1.18.11"
 
 # --- 1. Runtime Auto-Detection (Prioritizing Podman) ---
 if command -v podman >/dev/null 2>&1; then
@@ -25,6 +25,19 @@ fi
 
 echo "[>] Runtime: Using [$RUNTIME] for deployment"
 
+# --- 1b. Web Support Configuration (asked before build so the port can be baked in) ---
+WEB_ENABLED=0
+WEB_PORT=0
+printf "Web port (0 = disable web, default 0): "
+read -r WEB_PORT
+WEB_PORT=${WEB_PORT:-0}
+if [ "$WEB_PORT" != "0" ]; then
+    WEB_ENABLED=1
+    echo "[>] Web support enabled on port $WEB_PORT (host:container = $WEB_PORT:$WEB_PORT)"
+else
+    echo "[>] Web support disabled"
+fi
+
 # --- 2. Image Preparation (Using Slim Base + Prebuilt Binary) ---
 LOCAL_TAG="opencode:$OC_VERSION"
 IMG_ID=$($RUNTIME images -q "$LOCAL_TAG" 2>/dev/null)
@@ -37,25 +50,54 @@ if [ -z "$IMG_ID" ]; then
         exit 1
     fi
 
-    cat <<EOF > "$TMP_DF"
+    cat <<'EOF' > "$TMP_DF"
 FROM debian:bookworm-slim
+ARG OC_WEB_PORT=0
 # Install dependencies, Node.js, and OpenCode in single layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         procps git curl ca-certificates ripgrep fzf && \
     curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get install -y --no-install-recommends nodejs && \
-    npm install -g opencode-ai@${OC_VERSION} && \
+    npm install -g opencode-ai@__OC_VERSION__ && \
     npm cache clean --force && \
     apt-get purge -y curl && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* /tmp/* /root/.npm
 RUN echo "alias oc='opencode'" >> /root/.bashrc
+RUN if [ "$OC_WEB_PORT" != "0" ]; then printf '%s\n' \
+'# <OC-MANAGED-WEB>' \
+'function ocw() {' \
+'    local OCW_MATCH="opencode web --port '"${OC_WEB_PORT}"'"' \
+'    if pgrep -f "$OCW_MATCH" >/dev/null 2>&1; then' \
+'        echo "[>] Stopping opencode web"' \
+'        pkill -f "$OCW_MATCH"' \
+'        return' \
+'    fi' \
+'    local OCW_USER OCW_PASS' \
+'    printf "Web username: "' \
+'    read -r OCW_USER' \
+'    printf "Web password: "' \
+'    read -s OCW_PASS' \
+'    echo' \
+'    echo "[>] Starting opencode web on 0.0.0.0:'"${OC_WEB_PORT}"' (user: $OCW_USER)"' \
+'    OPENCODE_SERVER_USERNAME="$OCW_USER" OPENCODE_SERVER_PASSWORD="$OCW_PASS" \' \
+'        nohup opencode web --port '"${OC_WEB_PORT}"' --hostname 0.0.0.0 >/tmp/ocw.log 2>&1 &' \
+'    unset OCW_PASS' \
+'    echo "[>] Web URL: http://localhost:'"${OC_WEB_PORT}"'"' \
+'}' \
+'# </OC-MANAGED-WEB>' \
+>> /root/.bashrc; fi
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash"]
 EOF
+    sed -i "s/__OC_VERSION__/$OC_VERSION/" "$TMP_DF"
 
-    $RUNTIME build -t "$LOCAL_TAG" -f "$TMP_DF" .
+    BUILD_ARGS=""
+    if [ "$WEB_ENABLED" = "1" ]; then
+        BUILD_ARGS="--build-arg OC_WEB_PORT=$WEB_PORT --no-cache"
+    fi
+    $RUNTIME build $BUILD_ARGS -t "$LOCAL_TAG" -f "$TMP_DF" .
     if [ $? -ne 0 ]; then
         echo "[!] Error: Container image build failed."
         echo "[>] Dockerfile content:"
@@ -180,21 +222,27 @@ $END_SIG"
     done
 fi
 
-# --- 8. Launch Initial Container ---
+# --- 9. Launch Initial Container ---
 echo "[>] Launching OpenCode TUI Container"
 $RUNTIME rm -f "$CONTAINER_NAME" 2>/dev/null
 
-$RUNTIME run -it \
-  --name "$CONTAINER_NAME" \
-  --hostname "$CONTAINER_HOSTNAME" \
+RUN_ARGS="run -it \
+  --name $CONTAINER_NAME \
+  --hostname $CONTAINER_HOSTNAME \
   --user root \
   --pull never \
   --cap-add=SYS_PTRACE \
   --shm-size=4g \
-  -e IS_SANDBOX=1 \
-  -v "$WORKSPACE_FOLDER:/workspace:Z" \
-  -v "$WORKSPACE_FOLDER/.config:/root/.config:Z" \
-  -v "$WORKSPACE_FOLDER/.local:/root/.local:Z" \
+  -e IS_SANDBOX=1"
+if [ "$WEB_ENABLED" = "1" ]; then
+    RUN_ARGS="$RUN_ARGS -p $WEB_PORT:$WEB_PORT"
+fi
+RUN_ARGS="$RUN_ARGS \
+  -v $WORKSPACE_FOLDER:/workspace:Z \
+  -v $WORKSPACE_FOLDER/.config:/root/.config:Z \
+  -v $WORKSPACE_FOLDER/.local:/root/.local:Z"
+
+$RUNTIME $RUN_ARGS \
   "$IMG_ID"
 
 if [ $? -eq 0 ]; then
