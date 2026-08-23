@@ -6,7 +6,7 @@
 # ==============================================================================
 
 # --- 0. Version Configuration ---
-OC_VERSION="1.18.11"
+OC_VERSION="1.18.21"
 
 # --- 1. Runtime Auto-Detection (Prioritizing Podman) ---
 if command -v podman >/dev/null 2>&1; then
@@ -25,17 +25,23 @@ fi
 
 echo "[>] Runtime: Using [$RUNTIME] for deployment"
 
-# --- 1b. Web Support Configuration (asked before build so the port can be baked in) ---
-WEB_ENABLED=0
-WEB_PORT=0
-printf "Web port (0 = disable web, default 0): "
-read -r WEB_PORT
-WEB_PORT=${WEB_PORT:-0}
-if [ "$WEB_PORT" != "0" ]; then
-    WEB_ENABLED=1
-    echo "[>] Web support enabled on port $WEB_PORT (host:container = $WEB_PORT:$WEB_PORT)"
+# --- 1b. Port Range Configuration ---
+DEFAULT_PORT_RANGE="8000-8100"
+printf "Host port range to expose [%s] (0 = none): " "$DEFAULT_PORT_RANGE"
+read -r PORT_RANGE
+PORT_RANGE=${PORT_RANGE:-$DEFAULT_PORT_RANGE}
+if [ "$PORT_RANGE" != "0" ]; then
+    case "$PORT_RANGE" in
+        [0-9]*-[0-9]*)
+            echo "[>] Exposing port range $PORT_RANGE (host:container = $PORT_RANGE:$PORT_RANGE)"
+            ;;
+        *)
+            echo "[!] Invalid port range: $PORT_RANGE"
+            exit 1
+            ;;
+    esac
 else
-    echo "[>] Web support disabled"
+    echo "[>] Port exposure disabled"
 fi
 
 # --- 2. Image Preparation (Using Slim Base + Prebuilt Binary) ---
@@ -52,7 +58,6 @@ if [ -z "$IMG_ID" ]; then
 
     cat <<'EOF' > "$TMP_DF"
 FROM debian:bookworm-slim
-ARG OC_WEB_PORT=0
 # Install dependencies, Node.js, and OpenCode in single layer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
@@ -65,39 +70,12 @@ RUN apt-get update && \
     apt-get autoremove -y && \
     rm -rf /var/lib/apt/lists/* /tmp/* /root/.npm
 RUN echo "alias oc='opencode'" >> /root/.bashrc
-RUN if [ "$OC_WEB_PORT" != "0" ]; then printf '%s\n' \
-'# <OC-MANAGED-WEB>' \
-'function ocw() {' \
-'    local OCW_MATCH="opencode web --port '"${OC_WEB_PORT}"'"' \
-'    if pgrep -f "$OCW_MATCH" >/dev/null 2>&1; then' \
-'        echo "[>] Stopping opencode web"' \
-'        pkill -f "$OCW_MATCH"' \
-'        return' \
-'    fi' \
-'    local OCW_USER OCW_PASS' \
-'    printf "Web username: "' \
-'    read -r OCW_USER' \
-'    printf "Web password: "' \
-'    read -s OCW_PASS' \
-'    echo' \
-'    echo "[>] Starting opencode web on 0.0.0.0:'"${OC_WEB_PORT}"' (user: $OCW_USER)"' \
-'    OPENCODE_SERVER_USERNAME="$OCW_USER" OPENCODE_SERVER_PASSWORD="$OCW_PASS" \' \
-'        nohup opencode web --port '"${OC_WEB_PORT}"' --hostname 0.0.0.0 >/tmp/ocw.log 2>&1 &' \
-'    unset OCW_PASS' \
-'    echo "[>] Web URL: http://localhost:'"${OC_WEB_PORT}"'"' \
-'}' \
-'# </OC-MANAGED-WEB>' \
->> /root/.bashrc; fi
 WORKDIR /workspace
 ENTRYPOINT ["/bin/bash"]
 EOF
     sed -i "s/__OC_VERSION__/$OC_VERSION/" "$TMP_DF"
 
-    BUILD_ARGS=""
-    if [ "$WEB_ENABLED" = "1" ]; then
-        BUILD_ARGS="--build-arg OC_WEB_PORT=$WEB_PORT --no-cache"
-    fi
-    $RUNTIME build $BUILD_ARGS -t "$LOCAL_TAG" -f "$TMP_DF" .
+    $RUNTIME build -t "$LOCAL_TAG" -f "$TMP_DF" .
     if [ $? -ne 0 ]; then
         echo "[!] Error: Container image build failed."
         echo "[>] Dockerfile content:"
@@ -147,18 +125,8 @@ else
     cat <<EOF > "$CONFIG_FILE"
 {
   "\$schema": "https://opencode.ai/config.json",
-  "provider": {
-    "opencode-go": {
-      "options": {
-        "baseURL": "https://opencode.ai/zen/go/v1",
-        "apiKey": ""
-      },
-      "models": {
-        "mimo-v2.5": {}
-      }
-    }
-  },
-  "model": "opencode-go/mimo-v2.5",
+  "permission": "allow",
+  "lsp": true,
   "default_agent": "build",
   "autoupdate": false,
   "compaction": {
@@ -234,8 +202,8 @@ RUN_ARGS="run -it \
   --cap-add=SYS_PTRACE \
   --shm-size=4g \
   -e IS_SANDBOX=1"
-if [ "$WEB_ENABLED" = "1" ]; then
-    RUN_ARGS="$RUN_ARGS -p $WEB_PORT:$WEB_PORT"
+if [ "$PORT_RANGE" != "0" ]; then
+    RUN_ARGS="$RUN_ARGS -p $PORT_RANGE:$PORT_RANGE"
 fi
 RUN_ARGS="$RUN_ARGS \
   -v $WORKSPACE_FOLDER:/workspace:Z \
