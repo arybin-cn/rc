@@ -160,7 +160,7 @@ echo ""
 echo "--------------------------------------------------"
 echo "Generating QR Code..."
 echo "--------------------------------------------------"
-# Fixed version to python:3.12-slim and disabled pip version check notice
-$CONTAINER_RUNTIME run --rm -it -e PIP_ROOT_USER_ACTION=ignore docker.io/library/python:3.12-slim sh -c \
-    "pip install -q --disable-pip-version-check qrcode && qr '$IMPORT_URL'"
+# Official Alpine image + qrencode CLI (libqrencode-tools) from the official Alpine repository.
+$CONTAINER_RUNTIME run --rm docker.io/library/alpine:3.24 sh -c \
+    "apk add -q --no-cache libqrencode-tools && qrencode -t ANSIUTF8 '$IMPORT_URL'"
 echo "--------------------------------------------------"
