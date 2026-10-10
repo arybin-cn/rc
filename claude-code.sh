@@ -85,6 +85,67 @@ else
     echo "[>] Port exposure disabled"
 fi
 
+# --- 1c. Direct LAN Access (bypassing the VPN) ---
+# Prints the canonical network form of a private IPv4 CIDR, or fails.
+# Restricting to RFC 1918 keeps this from being usable to bypass the VPN for public traffic.
+normalize_private_cidr() {
+    case "$1" in
+        */*) ;;
+        *) return 1 ;;
+    esac
+    _addr=${1%/*}
+    _len=${1#*/}
+    case "$_len" in ""|*[!0-9]*) return 1 ;; esac
+    case "$_addr" in ""|*[!0-9.]*|*..*|.*|*.) return 1 ;; esac
+    [ "${#_len}" -le 2 ] && [ "$_len" -le 32 ] || return 1
+    _oldifs=$IFS; IFS=.
+    # shellcheck disable=SC2086
+    set -- $_addr
+    IFS=$_oldifs
+    [ "$#" -eq 4 ] || return 1
+    for _octet in "$@"; do
+        case "$_octet" in 0?*) return 1 ;; esac
+        [ "${#_octet}" -le 3 ] && [ "$_octet" -le 255 ] || return 1
+    done
+    if [ "$1" -eq 10 ]; then _min=8
+    elif [ "$1" -eq 172 ] && [ "$2" -ge 16 ] && [ "$2" -le 31 ]; then _min=12
+    elif [ "$1" -eq 192 ] && [ "$2" -eq 168 ]; then _min=16
+    else return 1
+    fi
+    [ "$_len" -ge "$_min" ] || return 1
+    _ip=$(( ($1 << 24) | ($2 << 16) | ($3 << 8) | $4 ))
+    _net=$(( _ip & ((0xFFFFFFFF << (32 - _len)) & 0xFFFFFFFF) ))
+    echo "$(( (_net >> 24) & 255 )).$(( (_net >> 16) & 255 )).$(( (_net >> 8) & 255 )).$(( _net & 255 ))/$_len"
+}
+
+# Subnet of the host's default-route interface, if it can be determined
+detect_lan_subnet() {
+    command -v ip >/dev/null 2>&1 || return 0
+    _dev=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+    [ -n "$_dev" ] || return 0
+    ip -4 route show dev "$_dev" proto kernel scope link 2>/dev/null | awk 'NR == 1 {print $1}'
+}
+
+DEFAULT_LAN_SUBNETS=$(normalize_private_cidr "$(detect_lan_subnet)" 2>/dev/null) || DEFAULT_LAN_SUBNETS="0"
+printf "Private LAN subnets reachable without VPN, comma-separated [%s] (0 = none): " "$DEFAULT_LAN_SUBNETS"
+read -r LAN_INPUT
+LAN_INPUT=${LAN_INPUT:-$DEFAULT_LAN_SUBNETS}
+LAN_SUBNETS=""
+if [ "$LAN_INPUT" != "0" ]; then
+    for LAN_CIDR in $(echo "$LAN_INPUT" | tr ',' ' '); do
+        if ! LAN_NORMALIZED=$(normalize_private_cidr "$LAN_CIDR"); then
+            echo "[!] Invalid LAN subnet: $LAN_CIDR (expected a private IPv4 CIDR such as 192.168.1.0/24)"
+            exit 1
+        fi
+        LAN_SUBNETS="${LAN_SUBNETS:+$LAN_SUBNETS,}$LAN_NORMALIZED"
+    done
+fi
+if [ -n "$LAN_SUBNETS" ]; then
+    echo "[>] Direct LAN access: $LAN_SUBNETS"
+else
+    echo "[>] Direct LAN access disabled"
+fi
+
 # --- 2. Image Preparation (Official Claude Code npm package + WireGuard) ---
 LOCAL_TAG="claude-code:$CC_CHANNEL"
 OLD_IMG_ID=$($RUNTIME images -q "$LOCAL_TAG" 2>/dev/null)
@@ -119,12 +180,31 @@ TMP_DF="$TMP_BUILD/Dockerfile"
 
 cat <<EOF > "$TMP_DF"
 FROM node:22-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends \\
-    bash ca-certificates curl iproute2 iptables libcap2-bin openresolv procps util-linux wireguard-tools && \\
+# NET_RAW/NET_ADMIN are dropped at runtime, so binaries carrying those file capabilities
+# cannot be executed. Hiding setcap makes package scripts fall back to plain binaries.
+RUN dpkg-divert --local --rename --divert /sbin/setcap.real --add /sbin/setcap && \\
+    apt-get update && apt-get install -y --no-install-recommends \\
+    bash ca-certificates curl iproute2 iptables iputils-ping openresolv procps util-linux wireguard-tools && \\
     rm -rf /var/lib/apt/lists/*
 ARG BUILD_NONCE
 RUN echo "\$BUILD_NONCE" >/dev/null && npm install -g @anthropic-ai/claude-code@$CC_VERSION && \\
     npm cache clean --force
+# wg-quick always writes src_valid_mark for full-tunnel configs, but /proc/sys is read-only in
+# containers. The runtime already sets it via --sysctl, so accept writes whose value is in place.
+RUN mkdir -p /usr/local/lib/cc && printf '%s\\n' '#!/bin/bash' \\
+    'out=\$(/usr/sbin/sysctl "\$@" 2>&1) && { [[ -n \$out ]] && echo "\$out"; exit 0; }' \\
+    'verified=' \\
+    'for arg in "\$@"; do' \\
+    '    [[ \$arg == *=* ]] || continue' \\
+    '    key=\${arg%%=*}' \\
+    '    if [[ \$(cat "/proc/sys/\${key//.//}" 2>/dev/null) != "\${arg#*=}" ]]; then' \\
+    '        echo "\$out" >&2' \\
+    '        exit 1' \\
+    '    fi' \\
+    '    verified=1' \\
+    'done' \\
+    '[[ -n \$verified ]] || { echo "\$out" >&2; exit 1; }' \\
+    > /usr/local/lib/cc/sysctl && chmod +x /usr/local/lib/cc/sysctl
 COPY wg0.conf /etc/wireguard/wg0.conf
 RUN chmod 600 /etc/wireguard/wg0.conf
 RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
@@ -135,6 +215,9 @@ RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
     '    iptables -A OUTPUT -o lo -p tcp --dport 53 -j REJECT' \\
     '    iptables -A OUTPUT -o lo -j ACCEPT' \\
     '    iptables -A OUTPUT -o wg0 -j ACCEPT' \\
+    '    for cidr in \${CC_LAN_SUBNETS//,/ }; do' \\
+    '        iptables -A OUTPUT -d "\$cidr" -j ACCEPT' \\
+    '    done' \\
     '    if [ -n "\$CC_PORT_RANGE" ]; then' \\
     '        iptables -A OUTPUT -p tcp --sport "\${CC_PORT_RANGE/-/:}" -m conntrack --ctstate ESTABLISHED -j ACCEPT' \\
     '    fi' \\
@@ -171,8 +254,26 @@ RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
     '    done < /etc/wireguard/wg0.conf' \\
     '    [ "\$found_endpoint" -eq 1 ]' \\
     '}' \\
-    'lock_egress' 'wg-quick up /etc/wireguard/wg0.conf' 'lock_egress' \\
-    'exec capsh --drop=cap_net_admin,cap_net_raw -- -i' \\
+    'route_lan() {' \\
+    '    [ -n "\$CC_LAN_SUBNETS" ] || return 0' \\
+    '    local gw="" dev="" prev="" word cidr' \\
+    '    for word in \$(ip -4 route show table main default); do' \\
+    '        [ "\$prev" = via ] && gw=\$word' \\
+    '        [ "\$prev" = dev ] && dev=\$word' \\
+    '        prev=\$word' \\
+    '    done' \\
+    '    if [ -z "\$gw" ] || [ -z "\$dev" ]; then' \\
+    '        echo "[!] No default route found for direct LAN access."' \\
+    '        return 1' \\
+    '    fi' \\
+    '    for cidr in \${CC_LAN_SUBNETS//,/ }; do' \\
+    '        if [ -z "\$(ip -4 route show table main exact "\$cidr")" ]; then' \\
+    '            ip route add "\$cidr" via "\$gw" dev "\$dev"' \\
+    '        fi' \\
+    '    done' \\
+    '}' \\
+    'lock_egress' 'PATH=/usr/local/lib/cc:\$PATH wg-quick up /etc/wireguard/wg0.conf' 'route_lan' 'lock_egress' \\
+    'exec setpriv --inh-caps=-net_admin,-net_raw --ambient-caps=-net_admin,-net_raw --bounding-set=-net_admin,-net_raw -- /bin/bash -i' \\
     > /usr/local/bin/cc-entrypoint && chmod +x /usr/local/bin/cc-entrypoint && \\
     echo 'alias claude="claude --dangerously-skip-permissions"' >> /root/.bashrc
 ENV COLORTERM=truecolor
@@ -273,7 +374,7 @@ function $FUNC_NAME() {
                 return 1
             fi
         fi
-        $RUNTIME exec -it $CONTAINER_NAME capsh --drop=cap_net_admin,cap_net_raw -- -i
+        $RUNTIME exec -it $CONTAINER_NAME setpriv --inh-caps=-net_admin,-net_raw --ambient-caps=-net_admin,-net_raw --bounding-set=-net_admin,-net_raw -- /bin/bash -i
     else
         echo \"[!] Error: Container $CONTAINER_NAME not found. Run deployment script again.\"
     fi
@@ -335,6 +436,10 @@ PORT_ARGS=""
 if [ "$PORT_RANGE" != "0" ]; then
     PORT_ARGS="-p $PORT_RANGE:$PORT_RANGE -e CC_PORT_RANGE=$PORT_RANGE"
 fi
+LAN_ARGS=""
+if [ -n "$LAN_SUBNETS" ]; then
+    LAN_ARGS="-e CC_LAN_SUBNETS=$LAN_SUBNETS"
+fi
 
 $RUNTIME run -it \
   --name "$CONTAINER_NAME" \
@@ -346,10 +451,12 @@ $RUNTIME run -it \
   --cap-add=NET_ADMIN \
   --device=/dev/net/tun \
   --sysctl=net.ipv4.conf.all.src_valid_mark=1 \
+  --sysctl="net.ipv4.ping_group_range=0 0" \
   --shm-size=4g \
   -e IS_SANDBOX=1 \
   -e CLAUDE_CONFIG_DIR=/root/.claude \
   $PORT_ARGS \
+  $LAN_ARGS \
   -v "$WORKSPACE_FOLDER:/workspace:z" \
   -v "$CONFIG_DIR:/root/.claude:z" \
   "$IMG_ID"
