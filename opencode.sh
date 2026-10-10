@@ -26,20 +26,32 @@ fi
 echo "[>] Runtime: Using [$RUNTIME] for deployment"
 
 # --- 1b. Port Range Configuration ---
+# Accepts START-END with 1 <= START <= END <= 65535
+is_valid_port_range() {
+    case "$1" in
+        [0-9]*-[0-9]*) ;;
+        *) return 1 ;;
+    esac
+    case "$1" in
+        *[!0-9-]*|*-*-*) return 1 ;;
+    esac
+    _start=${1%-*}
+    _end=${1#*-}
+    [ "${#_start}" -le 5 ] && [ "${#_end}" -le 5 ] &&
+        [ "$_start" -ge 1 ] && [ "$_end" -le 65535 ] && [ "$_start" -le "$_end" ]
+}
+
 DEFAULT_PORT_RANGE="8000-8100"
 printf "Host port range to expose [%s] (0 = none): " "$DEFAULT_PORT_RANGE"
 read -r PORT_RANGE
 PORT_RANGE=${PORT_RANGE:-$DEFAULT_PORT_RANGE}
 if [ "$PORT_RANGE" != "0" ]; then
-    case "$PORT_RANGE" in
-        [0-9]*-[0-9]*)
-            echo "[>] Exposing port range $PORT_RANGE (host:container = $PORT_RANGE:$PORT_RANGE)"
-            ;;
-        *)
-            echo "[!] Invalid port range: $PORT_RANGE"
-            exit 1
-            ;;
-    esac
+    if is_valid_port_range "$PORT_RANGE"; then
+        echo "[>] Exposing port range $PORT_RANGE (host:container = $PORT_RANGE:$PORT_RANGE)"
+    else
+        echo "[!] Invalid port range: $PORT_RANGE (expected START-END within 1-65535)"
+        exit 1
+    fi
 else
     echo "[>] Port exposure disabled"
 fi
@@ -100,17 +112,23 @@ printf "Local workspace folder [%s]: " "$DEFAULT_WORKSPACE"
 read -r WORKSPACE_FOLDER
 WORKSPACE_FOLDER=${WORKSPACE_FOLDER:-$DEFAULT_WORKSPACE}
 
-# Path Expansion: Handle ~ and $HOME strings
-WORKSPACE_FOLDER=$(echo "$WORKSPACE_FOLDER" | sed "s|^~|$HOME|")
-WORKSPACE_FOLDER=$(eval echo "$WORKSPACE_FOLDER")
+# Path Expansion: Handle ~ and $HOME prefixes without evaluating the input
+case "$WORKSPACE_FOLDER" in
+    "~"|"~/"*) WORKSPACE_FOLDER="$HOME${WORKSPACE_FOLDER#\~}" ;;
+    '$HOME'|'$HOME/'*) WORKSPACE_FOLDER="$HOME${WORKSPACE_FOLDER#\$HOME}" ;;
+esac
+
+# Bind mounts need an absolute path; a relative one would become a named volume
+if ! mkdir -p "$WORKSPACE_FOLDER" 2>/dev/null || ! WORKSPACE_FOLDER=$(cd "$WORKSPACE_FOLDER" && pwd); then
+    echo "[!] Error: Cannot use workspace folder: $WORKSPACE_FOLDER"
+    exit 1
+fi
 
 CONFIG_DIR="$WORKSPACE_FOLDER/.config/opencode"
 CONFIG_FILE="$CONFIG_DIR/opencode.jsonc"
 LOCAL_DIR="$WORKSPACE_FOLDER/.local"
 
-mkdir -p "$CONFIG_DIR" 2>/dev/null
-mkdir -p "$LOCAL_DIR" 2>/dev/null
-if [ $? -ne 0 ]; then
+if ! mkdir -p "$CONFIG_DIR" "$LOCAL_DIR" 2>/dev/null; then
     echo "[!] Error: Failed to create configuration directory at $CONFIG_DIR. Check permissions."
     exit 1
 fi
@@ -194,23 +212,23 @@ fi
 echo "[>] Launching OpenCode TUI Container"
 $RUNTIME rm -f "$CONTAINER_NAME" 2>/dev/null
 
-RUN_ARGS="run -it \
-  --name $CONTAINER_NAME \
-  --hostname $CONTAINER_HOSTNAME \
+PORT_ARGS=""
+if [ "$PORT_RANGE" != "0" ]; then
+    PORT_ARGS="-p $PORT_RANGE:$PORT_RANGE"
+fi
+
+$RUNTIME run -it \
+  --name "$CONTAINER_NAME" \
+  --hostname "$CONTAINER_HOSTNAME" \
   --user root \
   --pull never \
   --cap-add=SYS_PTRACE \
   --shm-size=4g \
-  -e IS_SANDBOX=1"
-if [ "$PORT_RANGE" != "0" ]; then
-    RUN_ARGS="$RUN_ARGS -p $PORT_RANGE:$PORT_RANGE"
-fi
-RUN_ARGS="$RUN_ARGS \
-  -v $WORKSPACE_FOLDER:/workspace:Z \
-  -v $WORKSPACE_FOLDER/.config:/root/.config:Z \
-  -v $WORKSPACE_FOLDER/.local:/root/.local:Z"
-
-$RUNTIME $RUN_ARGS \
+  -e IS_SANDBOX=1 \
+  $PORT_ARGS \
+  -v "$WORKSPACE_FOLDER:/workspace:z" \
+  -v "$WORKSPACE_FOLDER/.config:/root/.config:z" \
+  -v "$WORKSPACE_FOLDER/.local:/root/.local:z" \
   "$IMG_ID"
 
 if [ $? -eq 0 ]; then
