@@ -56,6 +56,22 @@ echo "[>] Runtime: Using [$RUNTIME] for deployment (network: $NETWORK_MODE)"
 
 # --- 1b. Port Range Configuration ---
 # Accepts START-END with 1 <= START <= END <= 65535
+is_valid_port() {
+    case "$1" in
+        ""|*[!0-9]*) return 1 ;;
+    esac
+    [ "${#1}" -le 5 ] && [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+
+DEFAULT_BROWSER_PORT=9988
+printf "Browser desktop port [%s]: " "$DEFAULT_BROWSER_PORT"
+read -r BROWSER_PORT
+BROWSER_PORT=${BROWSER_PORT:-$DEFAULT_BROWSER_PORT}
+if ! is_valid_port "$BROWSER_PORT"; then
+    echo "[!] Invalid browser desktop port: $BROWSER_PORT (expected 1-65535)"
+    exit 1
+fi
+
 is_valid_port_range() {
     case "$1" in
         [0-9]*-[0-9]*) ;;
@@ -76,6 +92,12 @@ read -r PORT_RANGE
 PORT_RANGE=${PORT_RANGE:-$DEFAULT_PORT_RANGE}
 if [ "$PORT_RANGE" != "0" ]; then
     if is_valid_port_range "$PORT_RANGE"; then
+        PORT_START=${PORT_RANGE%-*}
+        PORT_END=${PORT_RANGE#*-}
+        if [ "$PORT_START" -le "$BROWSER_PORT" ] && [ "$PORT_END" -ge "$BROWSER_PORT" ]; then
+            echo "[!] Port range $PORT_RANGE overlaps the browser desktop port $BROWSER_PORT. Choose a different range."
+            exit 1
+        fi
         echo "[>] Exposing port range $PORT_RANGE (host:container = $PORT_RANGE:$PORT_RANGE)"
     else
         echo "[!] Invalid port range: $PORT_RANGE (expected START-END within 1-65535)"
@@ -126,6 +148,19 @@ detect_lan_subnet() {
     ip -4 route show dev "$_dev" proto kernel scope link 2>/dev/null | awk 'NR == 1 {print $1}'
 }
 
+detect_host_lan_ip() {
+    command -v ip >/dev/null 2>&1 || return 0
+    _dev=$(ip -4 route show default 2>/dev/null | awk '{for (i = 1; i < NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
+    [ -n "$_dev" ] || return 0
+    for _addr in $(ip -4 -o addr show dev "$_dev" scope global 2>/dev/null | awk '{sub(/\/.*/, "", $4); print $4}'); do
+        if normalize_private_cidr "$_addr/32" >/dev/null 2>&1; then
+            echo "$_addr"
+            return 0
+        fi
+    done
+}
+
+HOST_LAN_IP=$(detect_host_lan_ip)
 DEFAULT_LAN_SUBNETS=$(normalize_private_cidr "$(detect_lan_subnet)" 2>/dev/null) || DEFAULT_LAN_SUBNETS="0"
 printf "Private LAN subnets reachable without VPN, comma-separated [%s] (0 = none): " "$DEFAULT_LAN_SUBNETS"
 read -r LAN_INPUT
@@ -176,6 +211,176 @@ if ! cp "$WG_CONFIG" "$TMP_BUILD/wg0.conf" || ! chmod 600 "$TMP_BUILD/wg0.conf";
     exit 1
 fi
 
+cat <<'BROWSER_SCRIPT' > "$TMP_BUILD/bb"
+#!/bin/bash
+set -euo pipefail
+
+STATE_DIR=/run/cc-browser
+PID_FILE=$STATE_DIR/supervisor.pid
+LOG_FILE=$STATE_DIR/supervisor.log
+PROFILE_DIR=/tmp/cc-browser-profile
+PASSWORD_FILE=$STATE_DIR/vnc-password
+VNC_PASSWORD_FILE=$STATE_DIR/vnc.pass
+PORT=${CC_BROWSER_PORT:-9988}
+
+is_running() {
+    [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null
+}
+
+# Avoid treating a stale PID file as a running supervisor after PID reuse.
+is_supervisor_running() {
+    _supervisor_pid=$(cat "$PID_FILE" 2>/dev/null) || return 1
+    case "$_supervisor_pid" in ""|*[!0-9]*) return 1 ;; esac
+    kill -0 "$_supervisor_pid" 2>/dev/null || return 1
+    [ -r "/proc/$_supervisor_pid/cmdline" ] &&
+        tr '\0' ' ' < "/proc/$_supervisor_pid/cmdline" | grep -Fq "/usr/local/bin/bb supervise"
+}
+
+desktop_is_healthy() {
+    is_supervisor_running &&
+        [ -f "$PASSWORD_FILE" ] &&
+        curl -fsS --max-time 1 "http://127.0.0.1:$PORT/vnc.html" >/dev/null 2>&1 &&
+        pgrep -u cc-browser -x x11vnc >/dev/null 2>&1 &&
+        pgrep -u cc-browser -x chromium >/dev/null 2>&1
+}
+
+show_access() {
+    _path="/vnc.html?autoconnect=1&resize=scale&password=$(cat "$PASSWORD_FILE")"
+    if [ -n "${CC_HOST_LAN_IP:-}" ]; then
+        echo "[>] LAN URL: http://$CC_HOST_LAN_IP:$PORT$_path"
+    else
+        echo "[!] Host LAN IPv4 was not detected; use a LAN address assigned to the host."
+    fi
+    echo "[>] Local URL: http://localhost:$PORT$_path"
+}
+
+start_browser() {
+    mkdir -p "$STATE_DIR" "$PROFILE_DIR" /home/cc-browser/.cache/fontconfig /home/cc-browser/.config
+    chown cc-browser:cc-browser "$STATE_DIR" "$PROFILE_DIR" /home/cc-browser/.cache /home/cc-browser/.cache/fontconfig /home/cc-browser/.config
+    if desktop_is_healthy; then
+        show_access
+        return 0
+    fi
+    if is_running || pgrep -u cc-browser >/dev/null 2>&1; then
+        stop_browser
+    fi
+    rm -f "$PID_FILE"
+    PASSWORD=$(openssl rand -base64 6 | tr '+/' '-_')
+    printf '%s\n' "$PASSWORD" > "$PASSWORD_FILE"
+    x11vnc -storepasswd "$PASSWORD" "$VNC_PASSWORD_FILE" >/dev/null 2>&1
+    chown cc-browser:cc-browser "$PASSWORD_FILE" "$VNC_PASSWORD_FILE"
+    chmod 600 "$PASSWORD_FILE" "$VNC_PASSWORD_FILE"
+    : > "$LOG_FILE"
+    chown cc-browser:cc-browser "$LOG_FILE"
+    setpriv --reuid=cc-browser --regid=cc-browser --init-groups \
+        /usr/local/bin/bb supervise >> "$LOG_FILE" 2>&1 </dev/null &
+    echo "$!" > "$PID_FILE"
+    for _ in {1..30}; do
+        if ! is_running; then
+            echo "[!] Browser desktop failed to start:"
+            cat "$LOG_FILE"
+            rm -f "$PID_FILE" "$PASSWORD_FILE" "$VNC_PASSWORD_FILE"
+            return 1
+        fi
+        if desktop_is_healthy; then
+            show_access
+            return 0
+        fi
+        sleep 1
+    done
+    echo "[!] Browser desktop did not become ready:"
+    cat "$LOG_FILE"
+    stop_browser
+    return 1
+}
+
+stop_browser() {
+    was_running=0
+    if is_supervisor_running; then
+        was_running=1
+        kill -TERM "$_supervisor_pid" 2>/dev/null || true
+        for _ in {1..10}; do
+            is_supervisor_running || break
+            sleep 1
+        done
+        if is_supervisor_running; then
+            kill -KILL "$_supervisor_pid" 2>/dev/null || true
+        fi
+    fi
+    if pgrep -u cc-browser >/dev/null 2>&1; then
+        pkill -TERM -u cc-browser 2>/dev/null || true
+        sleep 1
+        pkill -KILL -u cc-browser 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE" "$PASSWORD_FILE" "$VNC_PASSWORD_FILE"
+    if [ "$was_running" -eq 1 ]; then
+        echo "[>] Browser desktop stopped"
+    else
+        echo "[>] Browser desktop is not running"
+    fi
+}
+
+run_supervisor() {
+    children=()
+    cleanup() {
+        trap - EXIT INT TERM
+        pkill -TERM -u cc-browser -x chromium 2>/dev/null || true
+        for ((i=${#children[@]} - 1; i >= 0; i--)); do
+            kill "${children[i]}" 2>/dev/null || true
+        done
+        for ((i=${#children[@]} - 1; i >= 0; i--)); do
+            wait "${children[i]}" 2>/dev/null || true
+        done
+        rm -f "$PID_FILE" "$PASSWORD_FILE" "$VNC_PASSWORD_FILE"
+    }
+    trap cleanup EXIT
+    trap 'exit 0' INT TERM
+
+    export HOME=/home/cc-browser
+    export XDG_CACHE_HOME=$HOME/.cache
+    export XDG_CONFIG_HOME=$HOME/.config
+    export DISPLAY=:99
+    Xvfb "$DISPLAY" -screen 0 1280x800x24 -nolisten tcp &
+    children+=("$!")
+    for _ in {1..50}; do
+        [ -S /tmp/.X11-unix/X99 ] && break
+        sleep 0.1
+    done
+    if [ ! -S /tmp/.X11-unix/X99 ]; then
+        echo "[!] Xvfb failed to start"
+        exit 1
+    fi
+
+    openbox --sm-disable &
+    children+=("$!")
+    x11vnc -display "$DISPLAY" -rfbport 5900 -localhost -forever -shared -rfbauth "$VNC_PASSWORD_FILE" &
+    children+=("$!")
+    websockify --web=/usr/share/novnc "0.0.0.0:$PORT" localhost:5900 &
+    children+=("$!")
+    chromium --user-data-dir="$PROFILE_DIR" --no-first-run --no-default-browser-check about:blank &
+    children+=("$!")
+    wait -n "${children[@]}"
+}
+
+case "${1:-toggle}" in
+    toggle)
+        if desktop_is_healthy; then
+            stop_browser
+        else
+            start_browser
+        fi
+        ;;
+    supervise)
+        run_supervisor
+        ;;
+    *)
+        echo "Usage: bb" >&2
+        exit 2
+        ;;
+esac
+BROWSER_SCRIPT
+chmod 755 "$TMP_BUILD/bb"
+
 TMP_DF="$TMP_BUILD/Dockerfile"
 
 cat <<EOF > "$TMP_DF"
@@ -184,8 +389,13 @@ FROM node:22-bookworm-slim
 # cannot be executed. Hiding setcap makes package scripts fall back to plain binaries.
 RUN dpkg-divert --local --rename --divert /sbin/setcap.real --add /sbin/setcap && \\
     apt-get update && apt-get install -y --no-install-recommends \\
-    bash ca-certificates curl iproute2 iptables iputils-ping openresolv procps util-linux wireguard-tools && \\
+    bash ca-certificates chromium curl iproute2 iptables iputils-ping novnc openbox openresolv procps util-linux websockify wireguard-tools x11vnc xvfb && \\
     rm -rf /var/lib/apt/lists/*
+# Keep WebRTC on Chromium's default route without exposing local interface addresses.
+RUN mkdir -p /etc/chromium/policies/managed && \\
+    printf '%s\\n' '{"WebRtcIPHandling":"default_public_interface_only"}' \\
+    > /etc/chromium/policies/managed/webrtc.json && \\
+    chmod 644 /etc/chromium/policies/managed/webrtc.json
 ARG BUILD_NONCE
 RUN echo "\$BUILD_NONCE" >/dev/null && npm install -g @anthropic-ai/claude-code@$CC_VERSION && \\
     npm cache clean --force
@@ -205,6 +415,9 @@ RUN mkdir -p /usr/local/lib/cc && printf '%s\\n' '#!/bin/bash' \\
     'done' \\
     '[[ -n \$verified ]] || { echo "\$out" >&2; exit 1; }' \\
     > /usr/local/lib/cc/sysctl && chmod +x /usr/local/lib/cc/sysctl
+RUN useradd --system --create-home --home-dir /home/cc-browser --shell /usr/sbin/nologin cc-browser
+COPY bb /usr/local/bin/bb
+RUN chmod 755 /usr/local/bin/bb
 COPY wg0.conf /etc/wireguard/wg0.conf
 RUN chmod 600 /etc/wireguard/wg0.conf
 RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
@@ -215,6 +428,7 @@ RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
     '    iptables -A OUTPUT -o lo -p tcp --dport 53 -j REJECT' \\
     '    iptables -A OUTPUT -o lo -j ACCEPT' \\
     '    iptables -A OUTPUT -o wg0 -j ACCEPT' \\
+    '    iptables -A OUTPUT -p tcp --sport "\$CC_BROWSER_PORT" -m conntrack --ctstate ESTABLISHED -j ACCEPT' \\
     '    for cidr in \${CC_LAN_SUBNETS//,/ }; do' \\
     '        iptables -A OUTPUT -d "\$cidr" -j ACCEPT' \\
     '    done' \\
@@ -227,6 +441,7 @@ RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
     '    ip6tables -A OUTPUT -o lo -p tcp --dport 53 -j REJECT' \\
     '    ip6tables -A OUTPUT -o lo -j ACCEPT' \\
     '    ip6tables -A OUTPUT -o wg0 -j ACCEPT' \\
+    '    ip6tables -A OUTPUT -p tcp --sport "\$CC_BROWSER_PORT" -m conntrack --ctstate ESTABLISHED -j ACCEPT' \\
     '    if [ -n "\$CC_PORT_RANGE" ]; then' \\
     '        ip6tables -A OUTPUT -p tcp --sport "\${CC_PORT_RANGE/-/:}" -m conntrack --ctstate ESTABLISHED -j ACCEPT' \\
     '    fi' \\
@@ -275,7 +490,9 @@ RUN printf '%s\\n' '#!/bin/bash' 'set -e' \\
     'lock_egress' 'PATH=/usr/local/lib/cc:\$PATH wg-quick up /etc/wireguard/wg0.conf' 'route_lan' 'lock_egress' \\
     'exec setpriv --inh-caps=-net_admin,-net_raw --ambient-caps=-net_admin,-net_raw --bounding-set=-net_admin,-net_raw -- /bin/bash -i' \\
     > /usr/local/bin/cc-entrypoint && chmod +x /usr/local/bin/cc-entrypoint && \\
-    echo 'alias claude="claude --dangerously-skip-permissions"' >> /root/.bashrc
+    echo 'alias claude="claude --dangerously-skip-permissions"' >> /root/.bashrc && \\
+    echo 'alias cc="claude"' >> /root/.bashrc && \\
+    echo 'echo "[>] Browser desktop: run bb to toggle the browser; it prints LAN and localhost links. Run bb again to stop."' >> /root/.bashrc
 ENV COLORTERM=truecolor
 WORKDIR /workspace
 ENTRYPOINT ["/usr/local/bin/cc-entrypoint"]
@@ -455,6 +672,9 @@ $RUNTIME run -it \
   --shm-size=4g \
   -e IS_SANDBOX=1 \
   -e CLAUDE_CONFIG_DIR=/root/.claude \
+  -e "CC_BROWSER_PORT=$BROWSER_PORT" \
+  -e "CC_HOST_LAN_IP=$HOST_LAN_IP" \
+  -p "0.0.0.0:$BROWSER_PORT:$BROWSER_PORT/tcp" \
   $PORT_ARGS \
   $LAN_ARGS \
   -v "$WORKSPACE_FOLDER:/workspace:z" \
